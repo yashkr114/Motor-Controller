@@ -1,0 +1,218 @@
+#include "Ifx_Types.h"
+#include "IfxCpu.h"
+#include "IfxScuWdt.h"
+#include "IfxPort.h"
+#include "IfxPort_PinMap.h"
+#include "IfxGtm.h"
+#include "IfxGtm_Tom_Pwm.h"
+#include "GTM_TOM_PWM.h"
+#include "Bsp.h"
+#include "ASCLIN_Shell_UART.h"
+
+IFX_ALIGN(4) IfxCpu_syncEvent g_cpuSyncEvent = 0;
+
+//#define STEP_DELAY 100
+
+#define WAIT_TIME   10              //Number of milliseconds to wait between each duty cycle change
+
+#define IN1 IfxPort_P00_0
+#define IN2 IfxPort_P00_1
+#define IN3 IfxPort_P00_2
+#define IN4 IfxPort_P00_3
+#define TEST_LED IfxPort_P10_2  // Or whichever pin your onboard LED is on
+#define BTN_INC IfxPort_P00_4  // Button to increase RPM
+#define BTN_DEC IfxPort_P00_5  // Button to decrease RPM
+#define BTN_SWC IfxPort_P00_6
+
+
+#define ENA_PIN IfxGtm_TOM0_0_TOUT0_P02_0_OUT  // TOM0 CH0 → P02.0
+#define ENB_PIN IfxGtm_TOM0_1_TOUT1_P02_1_OUT  // TOM0 CH1 → P02.1
+
+IfxGtm_Tom_Pwm_Config enaConfig;
+IfxGtm_Tom_Pwm_Config enbConfig;
+IfxGtm_Tom_Pwm_Driver enaPwmDriver;
+IfxGtm_Tom_Pwm_Driver enbPwmDriver;
+
+int rpm = 3;  // Initial RPM
+int serial_rpm = 3;  // Stores rpm value from COM4
+const int maxRPM = 150;
+const int minRPM = -150;
+int steps=0;
+int switchvalue=1;
+
+void delay_ms(uint32 ms)
+{
+    waitTime(IfxStm_getTicksFromMilliseconds(BSP_DEFAULT_TIMER, ms));
+}
+
+void init_GPIO()
+{
+    IfxPort_setPinMode(IN1.port, IN1.pinIndex, IfxPort_Mode_outputPushPullGeneral);
+    IfxPort_setPinMode(IN2.port, IN2.pinIndex, IfxPort_Mode_outputPushPullGeneral);
+    IfxPort_setPinMode(IN3.port, IN3.pinIndex, IfxPort_Mode_outputPushPullGeneral);
+    IfxPort_setPinMode(IN4.port, IN4.pinIndex, IfxPort_Mode_outputPushPullGeneral);
+
+
+    // In init_GPIO()
+    IfxPort_setPinMode(IfxPort_P02_0.port, IfxPort_P02_0.pinIndex, IfxPort_Mode_outputPushPullGeneral);
+    IfxPort_setPinState(IfxPort_P02_0.port, IfxPort_P02_0.pinIndex, IfxPort_State_high);
+
+    IfxPort_setPinMode(IfxPort_P02_1.port, IfxPort_P02_1.pinIndex, IfxPort_Mode_outputPushPullGeneral);
+    IfxPort_setPinState(IfxPort_P02_1.port, IfxPort_P02_1.pinIndex, IfxPort_State_high);
+
+
+    // LED pin setup
+    IfxPort_setPinModeOutput(TEST_LED.port, TEST_LED.pinIndex, IfxPort_OutputMode_pushPull, IfxPort_OutputIdx_general);
+
+    // Configure buttons as input with internal pull-up
+    IfxPort_setPinMode(BTN_INC.port, BTN_INC.pinIndex, IfxPort_Mode_inputPullUp);
+    IfxPort_setPinMode(BTN_DEC.port, BTN_DEC.pinIndex, IfxPort_Mode_inputPullUp);
+    IfxPort_setPinMode(BTN_SWC.port, BTN_SWC.pinIndex, IfxPort_Mode_inputPullUp);
+
+}
+
+void blink_led()
+{
+    IfxPort_togglePin(TEST_LED.port, TEST_LED.pinIndex);
+    delay_ms(500);
+}
+
+
+void set_pin(const IfxPort_Pin pin, boolean state)
+{
+    IfxPort_setPinState(pin.port, pin.pinIndex, state ? IfxPort_State_high : IfxPort_State_low);
+}
+
+
+void step_motor(int STEP_DELAY)
+{
+    if(switchvalue==0 && steps==0){
+        set_pin(IN1, FALSE); set_pin(IN2, FALSE);
+        set_pin(IN3, FALSE); set_pin(IN4, FALSE);
+
+    }
+    else{
+
+        if (STEP_DELAY >= 0)
+
+    {
+        set_pin(IN1, TRUE); set_pin(IN2, FALSE);
+        set_pin(IN3, TRUE); set_pin(IN4, FALSE);
+        delay_ms(STEP_DELAY);
+        steps++;
+
+        set_pin(IN1, FALSE); set_pin(IN2, TRUE);
+        set_pin(IN3, TRUE); set_pin(IN4, FALSE);
+        delay_ms(STEP_DELAY);
+        steps++;
+
+        set_pin(IN1, FALSE); set_pin(IN2, TRUE);
+        set_pin(IN3, FALSE); set_pin(IN4, TRUE);
+        delay_ms(STEP_DELAY);
+        steps++;
+
+        set_pin(IN1, TRUE); set_pin(IN2, FALSE);
+        set_pin(IN3, FALSE); set_pin(IN4, TRUE);
+        delay_ms(STEP_DELAY);
+        steps++;
+        steps%=200;
+    }
+    else
+    {
+        STEP_DELAY = -STEP_DELAY;
+
+        set_pin(IN1, TRUE); set_pin(IN2, FALSE);
+        set_pin(IN3, FALSE); set_pin(IN4, TRUE);
+        delay_ms(STEP_DELAY);
+        steps++;
+
+        set_pin(IN1, FALSE); set_pin(IN2, TRUE);
+        set_pin(IN3, FALSE); set_pin(IN4, TRUE);
+        delay_ms(STEP_DELAY);
+        steps++;
+
+        set_pin(IN1, FALSE); set_pin(IN2, TRUE);
+        set_pin(IN3, TRUE); set_pin(IN4, FALSE);
+        delay_ms(STEP_DELAY);
+        steps++;
+
+        set_pin(IN1, TRUE); set_pin(IN2, FALSE);
+        set_pin(IN3, TRUE); set_pin(IN4, FALSE);
+        delay_ms(STEP_DELAY);
+        steps++;
+        steps%=200;
+        }
+    }
+}
+
+void blink_on_rpm_change()
+{
+    IfxPort_setPinState(TEST_LED.port, TEST_LED.pinIndex, IfxPort_State_high);
+    delay_ms(100);
+    IfxPort_setPinState(TEST_LED.port, TEST_LED.pinIndex, IfxPort_State_low);
+}
+
+
+void core0_main(void)
+{
+    IfxCpu_enableInterrupts();
+    IfxScuWdt_disableCpuWatchdog(IfxScuWdt_getCpuWatchdogPassword());
+    IfxScuWdt_disableSafetyWatchdog(IfxScuWdt_getSafetyWatchdogPassword());
+    IfxCpu_emitEvent(&g_cpuSyncEvent);
+    IfxCpu_waitEvent(&g_cpuSyncEvent, 1);
+
+    init_GPIO();
+    /* Initializing the Shell Interface and the UART communication */
+        initShellInterface();
+        extern int rpm_shell;  // Declare the variable from the shell file
+        extern int switch_shell;
+        while (1)
+        {
+            runShellInterface();  // Still keep UART interactive
+
+            // Sync RPM from UART if changed
+            int temp = getDelayValue();  // which returns rpm_shell
+            int tempswc=getswitchValue();
+            if (temp != rpm)
+            {
+                rpm = temp;
+                blink_on_rpm_change();  // Optional
+            }
+            if (tempswc != switchvalue)
+                        {
+                switchvalue = tempswc;
+                            blink_on_rpm_change();  // Optional
+                        }
+            // Button: Increase RPM
+            if (IfxPort_getPinState(BTN_INC.port, BTN_INC.pinIndex) == 0)
+            {
+                rpm += 1;
+                if (rpm > maxRPM) rpm = maxRPM;
+                rpm_shell = rpm;
+                blink_on_rpm_change();
+                delay_ms(50);
+            }
+
+            // Button: Decrease RPM
+            if (IfxPort_getPinState(BTN_DEC.port, BTN_DEC.pinIndex) == 0)
+            {
+                rpm -= 1;
+                if (rpm < minRPM) rpm = minRPM;
+                rpm_shell = rpm;
+                blink_on_rpm_change();
+                delay_ms(50);
+            }
+
+            int stepdelay = (rpm != 0) ? (300 / rpm) : 300;
+
+            if (IfxPort_getPinState(BTN_SWC.port, BTN_SWC.pinIndex) == 0){
+                if(switchvalue==0)switchvalue=1;
+                else switchvalue=0;
+                switch_shell = switchvalue;
+                blink_on_rpm_change();
+                delay_ms(50);
+            }
+            //switchvalue = getswitchValue();
+            step_motor(stepdelay);
+        }
+}
