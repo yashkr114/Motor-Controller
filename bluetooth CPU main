@@ -1,0 +1,57 @@
+#include "Ifx_Types.h"
+#include "IfxCpu.h"
+#include "IfxScuWdt.h"
+#include "IfxPort.h"
+#include "IfxAsclin_Asc.h"
+#include "IfxAsclin_PinMap.h"
+#include "Bsp.h"
+
+#define LED_PORT &MODULE_P10, 2  // External LED on P10.2
+
+IfxAsclin_Asc g_asc;
+
+void initLED(void) {
+    IfxPort_setPinModeOutput(LED_PORT, IfxPort_OutputMode_pushPull, IfxPort_OutputIdx_general);
+    IfxPort_setPinState(LED_PORT, IfxPort_State_low);
+}
+
+void initUART(void) {
+    IfxAsclin_Asc_Config ascConf;
+    static IfxAsclin_Asc_Pins pins;
+
+    IfxAsclin_Asc_initModuleConfig(&ascConf, &MODULE_ASCLIN0);
+    ascConf.baudrate.baudrate = 9600;
+    ascConf.baudrate.oversampling = IfxAsclin_OversamplingFactor_16;
+
+    pins.rx = &IfxAsclin0_RXA_P14_1_IN;
+    pins.tx = &IfxAsclin0_TX_P14_0_OUT;
+    pins.rts = NULL_PTR;
+    pins.cts = NULL_PTR;
+    pins.pinDriver = IfxPort_PadDriver_cmosAutomotiveSpeed1;
+    ascConf.pins = &pins;
+
+    IfxAsclin_Asc_initModule(&g_asc, &ascConf);
+}
+
+void handleBluetoothCommand(void) {
+    uint8 data;
+    if (IfxAsclin_Asc_getReadCount(&g_asc) > 0) {
+        IfxAsclin_Asc_read(&g_asc, &data, 1, TIME_INFINITE);
+
+        if (data == '1') {
+            IfxPort_setPinState(LED_PORT, IfxPort_State_high); // LED ON
+        } else if (data == '0') {
+            IfxPort_setPinState(LED_PORT, IfxPort_State_low);  // LED OFF
+        }
+    }
+}
+
+void core0_main(void) {
+    IfxCpu_enableInterrupts();
+    initLED();
+    initUART();
+
+    while (1) {
+        handleBluetoothCommand();
+    }
+}
