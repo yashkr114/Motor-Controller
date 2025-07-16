@@ -9,6 +9,8 @@
 #include "Bsp.h"
 #include "ASCLIN_Shell_UART.h"
 
+
+
 IFX_ALIGN(4) IfxCpu_syncEvent g_cpuSyncEvent = 0;
 
 //#define STEP_DELAY 100
@@ -35,10 +37,22 @@ IfxGtm_Tom_Pwm_Driver enbPwmDriver;
 
 int rpm = 3;  // Initial RPM
 int serial_rpm = 3;  // Stores rpm value from COM4
-const int maxRPM = 150;
-const int minRPM = -150;
+const int maxRPM = 300;
+const int minRPM = -300;
 int steps=0;
 int switchvalue=1;
+
+
+boolean last_btn_inc_state = TRUE;  // Buttons are pull-up, so released = HIGH
+uint32 last_btn_inc_time = 0;
+const uint32 debounce_interval = 100; // ms
+boolean last_btn_dec_state = TRUE;
+uint32 last_btn_dec_time = 0;
+boolean last_btn_swc_state = TRUE;
+uint32 last_btn_swc_time = 0;
+boolean ledBlinking = FALSE;
+uint32 ledBlinkStartTime = 0;
+const uint32 ledBlinkDuration = 100;  // ms
 
 void delay_ms(uint32 ms)
 {
@@ -76,6 +90,53 @@ void blink_led()
     IfxPort_togglePin(TEST_LED.port, TEST_LED.pinIndex);
     delay_ms(500);
 }
+
+void init_PWM()
+{
+    IfxGtm_enable(&MODULE_GTM);
+    IfxGtm_Cmu_enableClocks(&MODULE_GTM, IFXGTM_CMU_CLKEN_FXCLK);
+    // ENA - CH0
+
+    IfxGtm_Tom_Pwm_initConfig(&enaConfig, &MODULE_GTM);
+    enaConfig.tom = ENA_PIN.tom;
+    enaConfig.tomChannel = ENA_PIN.channel;
+    enaConfig.pin.outputPin = &ENA_PIN;
+    //enaConfig.pin.outputMode = IfxPort_OutputMode_pushPull;
+    //enaConfig.pin.padDriver = IfxPort_PadDriver_cmosAutomotiveSpeed1;
+    enaConfig.synchronousUpdateEnabled= TRUE;
+    enaConfig.period = 10000;
+    enaConfig.dutyCycle = 40000;
+    IfxGtm_Tom_Pwm_init(&enaPwmDriver, &enaConfig);
+    IfxGtm_Tom_Pwm_start(&enaPwmDriver, TRUE);
+
+    // ENB - CH1
+
+    IfxGtm_Tom_Pwm_initConfig(&enbConfig, &MODULE_GTM);
+    enbConfig.tom = ENB_PIN.tom;
+    enbConfig.tomChannel = ENB_PIN.channel;
+    enbConfig.pin.outputPin = &ENB_PIN;
+    enbConfig.synchronousUpdateEnabled = TRUE;
+    //enbConfig.pin.outputMode = IfxPort_OutputMode_pushPull;
+    //enbConfig.pin.padDriver = IfxPort_PadDriver_cmosAutomotiveSpeed1;
+    enbConfig.period = 10000;
+    enbConfig.dutyCycle = 7500;
+    IfxGtm_Tom_Pwm_init(&enbPwmDriver, &enbConfig);
+    IfxGtm_Tom_Pwm_start(&enbPwmDriver, TRUE);
+}
+
+void set_PWM_duty_cycle(uint32 percent)
+{
+    uint32 duty = percent * 100;  // percent of 10000
+
+    enaConfig.dutyCycle = duty;
+    IfxGtm_Tom_Pwm_init(&enaPwmDriver, &enaConfig);
+    IfxGtm_Tom_Pwm_start(&enaPwmDriver, TRUE);
+
+    enbConfig.dutyCycle = duty;
+    IfxGtm_Tom_Pwm_init(&enbPwmDriver, &enbConfig);
+    IfxGtm_Tom_Pwm_start(&enbPwmDriver, TRUE);
+}
+
 
 
 void set_pin(const IfxPort_Pin pin, boolean state)
@@ -143,14 +204,17 @@ void step_motor(int STEP_DELAY)
         steps%=200;
         }
     }
+
 }
+
 
 void blink_on_rpm_change()
 {
     IfxPort_setPinState(TEST_LED.port, TEST_LED.pinIndex, IfxPort_State_high);
-    delay_ms(100);
-    IfxPort_setPinState(TEST_LED.port, TEST_LED.pinIndex, IfxPort_State_low);
+    ledBlinking = TRUE;
+    ledBlinkStartTime = IfxStm_get(BSP_DEFAULT_TIMER);
 }
+
 
 
 void core0_main(void)
@@ -162,8 +226,10 @@ void core0_main(void)
     IfxCpu_waitEvent(&g_cpuSyncEvent, 1);
 
     init_GPIO();
-    /* Initializing the Shell Interface and the UART communication */
+
+    /* Initialize the Shell Interface and the UART communication */
         initShellInterface();
+
         extern int rpm_shell;  // Declare the variable from the shell file
         extern int switch_shell;
         while (1)
@@ -183,36 +249,89 @@ void core0_main(void)
                 switchvalue = tempswc;
                             blink_on_rpm_change();  // Optional
                         }
-            // Button: Increase RPM
-            if (IfxPort_getPinState(BTN_INC.port, BTN_INC.pinIndex) == 0)
+             //Button: Increase RPM
+
+            boolean current_btn_inc_state = IfxPort_getPinState(BTN_INC.port, BTN_INC.pinIndex);
+            uint32 now = IfxStm_get(BSP_DEFAULT_TIMER);
+
+            if (last_btn_inc_state == TRUE && current_btn_inc_state == FALSE) // Falling edge: button pressed
             {
-                rpm += 1;
-                if (rpm > maxRPM) rpm = maxRPM;
-                rpm_shell = rpm;
-                blink_on_rpm_change();
-                delay_ms(50);
+                if (now - last_btn_inc_time > IfxStm_getTicksFromMilliseconds(BSP_DEFAULT_TIMER, debounce_interval))
+                {
+                    if (rpm >= 0)
+                    {
+                        rpm += 1;
+                        if (rpm > maxRPM) rpm = maxRPM;
+                    }
+                    else
+                    {
+                        rpm -= 1;
+                        if (rpm < minRPM) rpm = minRPM;
+                    }
+
+                    rpm_shell = rpm;
+                    blink_on_rpm_change();  // Optional
+                    last_btn_inc_time = now; // Reset debounce timer
+                }
             }
 
-            // Button: Decrease RPM
-            if (IfxPort_getPinState(BTN_DEC.port, BTN_DEC.pinIndex) == 0)
+            last_btn_inc_state = current_btn_inc_state;
+
+
+            boolean current_btn_dec_state = IfxPort_getPinState(BTN_DEC.port, BTN_DEC.pinIndex);
+
+            if (last_btn_dec_state == TRUE && current_btn_dec_state == FALSE)  // Falling edge
             {
-                rpm -= 1;
-                if (rpm < minRPM) rpm = minRPM;
-                rpm_shell = rpm;
-                blink_on_rpm_change();
-                delay_ms(50);
+                if (now - last_btn_dec_time > IfxStm_getTicksFromMilliseconds(BSP_DEFAULT_TIMER, debounce_interval))
+                {
+                    if (rpm >= 0)
+                    {
+                        rpm -= 1;
+                        if (rpm < minRPM) rpm = minRPM;
+                    }
+                    else
+                    {
+                        rpm += 1;
+                        if (rpm > maxRPM) rpm = maxRPM;
+                    }
+
+                    rpm_shell = rpm;
+                    blink_on_rpm_change();  // Optional
+                    last_btn_dec_time = now;
+                }
             }
 
-            int stepdelay = (rpm != 0) ? (300 / rpm) : 300;
+            last_btn_dec_state = current_btn_dec_state;
 
-            if (IfxPort_getPinState(BTN_SWC.port, BTN_SWC.pinIndex) == 0){
-                if(switchvalue==0)switchvalue=1;
-                else switchvalue=0;
-                switch_shell = switchvalue;
-                blink_on_rpm_change();
-                delay_ms(50);
+
+    int stepdelay = (rpm != 0) ? (300 / rpm) : 300;
+
+            boolean current_btn_swc_state = IfxPort_getPinState(BTN_SWC.port, BTN_SWC.pinIndex);
+
+            if (last_btn_swc_state == TRUE && current_btn_swc_state == FALSE)  // Falling edge
+            {
+                if (now - last_btn_swc_time > IfxStm_getTicksFromMilliseconds(BSP_DEFAULT_TIMER, debounce_interval))
+                {
+                    switchvalue = !switchvalue;
+                    switch_shell = switchvalue;
+                    blink_on_rpm_change();  // Optional
+                    last_btn_swc_time = now;
+                }
             }
+
+            last_btn_swc_state = current_btn_swc_state;
+
             //switchvalue = getswitchValue();
+            if (ledBlinking)
+            {
+                uint32 now = IfxStm_get(BSP_DEFAULT_TIMER);
+                if (now - ledBlinkStartTime >= IfxStm_getTicksFromMilliseconds(BSP_DEFAULT_TIMER, ledBlinkDuration))
+                {
+                    IfxPort_setPinState(TEST_LED.port, TEST_LED.pinIndex, IfxPort_State_low);
+                    ledBlinking = FALSE;
+                }
+            }
+
             step_motor(stepdelay);
         }
 }
