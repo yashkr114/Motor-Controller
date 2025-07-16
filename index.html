@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>TC375 RPM Controller</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <h1>TC375 RPM Controller</h1>
+
+    <div class="container">
+        <div class="input-group">
+    <label for="freq">Set RPM:</label>
+    <input type="number" id="freq" placeholder="Enter RPM">
+</div>
+
+<div class="direction-buttons">
+    <button onclick="setFrequency(true)">Forward</button>
+    <button onclick="setFrequency(false)">Reverse</button>
+</div>
+
+
+        <div class="slider-container">
+            <label for="freqSlider">Adjust RPM:</label>
+            <input type="range" id="freqSlider" min="0" max="200" step="1" value="0" oninput="sliderChange(this.value)">
+
+        </div>
+
+        <div class="control-buttons">
+            <button onclick="sendCommand('decrease')">Decrease</button>
+            <button onclick="sendCommand('increase')">Increase</button>
+            <button onclick="sendCommand('switch')">On/Off</button>
+        </div>
+
+        <div class="dialog">
+            <strong>Current RPM:</strong>
+            <span id="currentFreq">50</span>
+        </div>
+        <div class="direction-indicator">
+    <strong>Direction:</strong>
+    <span id="currentDirection">Forward</span>
+</div>
+
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
